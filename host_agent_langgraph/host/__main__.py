@@ -158,11 +158,11 @@ async def lifespan(app: Starlette):
     if not os.getenv("GOOGLE_API_KEY"):
         logger.error("GOOGLE_API_KEY environment variable not set.")
         sys.exit(1)
-    friend_agent_urls = [
+    domain_agent_urls = [
         "http://localhost:10005",  # Application Agent
     ]
     logger.info("Initializing Host Agent...")
-    _host_agent = await HostAgent.create(remote_agent_addresses=friend_agent_urls)
+    _host_agent = await HostAgent.create(remote_agent_addresses=domain_agent_urls)
     logger.info("Host Agent ready at http://localhost:10001")
     yield
 

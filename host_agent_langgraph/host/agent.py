@@ -76,7 +76,7 @@ class HostAgent:
         @tool
         async def send_message(agent_name: str, task: str) -> str:
             """Sends a task to a remote domain agent to process the request."""
-            print(f"[Step {step():>3}] >> ENTER send_message(agent_name={agent_name})")
+            print(f"[Step {step():>3}] >> ENTER send_message(agent_name={agent_name}, task={task})")
 
             if agent_name not in remote_connections:
                 print(f"[Step {step():>3}] << EXIT  send_message → error: agent '{agent_name}' not found")
@@ -101,7 +101,9 @@ class HostAgent:
                 id=message_id, params=MessageSendParams.model_validate(payload)
             )
             send_response: SendMessageResponse = await client.send_message(message_request)
-            print("send_response", send_response)
+            
+            print("Raw send_response from domain agent:")
+            print(json.dumps(send_response.model_dump(mode="json"), indent=2))
 
             if not isinstance(
                 send_response.root, SendMessageSuccessResponse
@@ -199,25 +201,33 @@ class HostAgent:
         async for chunk in self.graph.astream(inputs, config, stream_mode="values"):
             last_message = chunk["messages"][-1]
             if isinstance(last_message, AIMessage) and last_message.tool_calls:
-                yield {
+                print(f"[Step {step():>3}] AIMessage with tool_calls - type: {type(last_message)}, tool_calls: {last_message.tool_calls}")   
+                yield_message = {
                     "is_task_complete": False,
                     "content": "The host agent is thinking...",
                 }
+                print(f"[Step {step():>3}] yield: {yield_message}")
+                yield yield_message
             elif isinstance(last_message, ToolMessage):
-                yield {
+                print(f"[Step {step():>3}] AIMessage with tool_calls - type: {type(last_message)}")   
+                yield_message = {
                     "is_task_complete": False,
                     "content": "The host agent is thinking...",
                 }
+                print(f"[Step {step():>3}] yield: {yield_message}")
+                yield yield_message
             elif isinstance(last_message, AIMessage) and not last_message.tool_calls:
+                print(f"[Step {step():>3}] AIMessage with tool_calls - type: {type(last_message)}, tool_calls: {last_message.tool_calls}")   
                 content = last_message.content
                 if isinstance(content, list):
                     content = "\n".join(
-                        part.get("text", "")
-                        for part in content
-                        if isinstance(part, dict)
+                    part.get("text", "")
+                    for part in content
+                    if isinstance(part, dict)
                     )
-                print(f"[Step {step():>3}] << EXIT  stream → final response yielded")
-                yield {
+                yield_message = {
                     "is_task_complete": True,
                     "content": content,
                 }
+                print(f"[Step {step():>3}] << EXIT  stream → final response yielded: {yield_message}")
+                yield yield_message

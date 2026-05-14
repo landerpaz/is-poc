@@ -31,12 +31,12 @@ The host currently connects to one domain agent:
 |---|---|---|
 | Application Agent | `http://localhost:10005` | 10005 |
 
-URLs are listed in `host/__main__.py` → `lifespan()` → `friend_agent_urls`.
+URLs are listed in `host/__main__.py` → `lifespan()` → `domain_agent_urls`.
 
 ## Adding a new domain agent
 
 1. Start the new agent on a free port so it serves a valid AgentCard at `/.well-known/agent.json`.
-2. Append its URL to `friend_agent_urls` in `host/__main__.py`.
+2. Append its URL to `domain_agent_urls` in `host/__main__.py`.
 3. Restart the host agent — it will pick up the new card and inject it into the system prompt automatically.
 
 ## System prompt

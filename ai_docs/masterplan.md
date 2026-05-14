@@ -68,5 +68,5 @@ All state is in-memory and ephemeral — the application registry and conversati
 
 Additional domain agents can be added by:
 1. Creating a new agent subproject following the same three-file pattern (`agent.py`, `agent_executor.py`, `__main__.py`).
-2. Adding its URL to the `friend_agent_urls` list in `host_agent_langgraph/host/__main__.py`.
+2. Adding its URL to the `domain_agent_urls` list in `host_agent_langgraph/host/__main__.py`.
 3. Restarting the host agent to pick up the new AgentCard.

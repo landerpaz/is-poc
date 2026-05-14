@@ -50,6 +50,7 @@ class RemoteAgentConnections:
             for p in (msg.parts or [])
             if hasattr(p.root, "text")
         ]
+        print(f"[Step {step():>3}] >> Sending message to {self.card.name}")
         print(
             f"  ┌─ To      : {self.card.name}\n"
             f"  ├─ Role    : {msg.role}\n"
@@ -58,21 +59,24 @@ class RemoteAgentConnections:
             f"  └─ Message : {' | '.join(text_parts) or '(no text parts)'}"
         )
         result = await self.agent_client.send_message(message_request)
+        print(f"[Step {step():>3}] << EXIT  RemoteAgentConnections.send_message → response received")
+        self._log_response(result)
+        return result
 
+    def _log_response(self, result: SendMessageResponse) -> None:
         if isinstance(result.root, SendMessageSuccessResponse) and isinstance(result.root.result, Task):
             task = result.root.result
-            status_text = ""
-            if task.status.message:
-                status_text = " | ".join(
-                    p.root.text
-                    for p in (task.status.message.parts or [])
-                    if hasattr(p.root, "text")
-                )
-            artifact_texts = []
-            for artifact in (task.artifacts or []):
-                for p in (artifact.parts or []):
-                    if hasattr(p.root, "text"):
-                        artifact_texts.append(p.root.text)
+            status_text = " | ".join(
+                p.root.text
+                for p in (task.status.message.parts or [])
+                if hasattr(p.root, "text")
+            ) if task.status.message else ""
+            artifact_texts = [
+                p.root.text
+                for artifact in (task.artifacts or [])
+                for p in (artifact.parts or [])
+                if hasattr(p.root, "text")
+            ]
             print(
                 f"  ┌─ From     : {self.card.name}\n"
                 f"  ├─ Task ID  : {task.id}\n"
@@ -82,6 +86,3 @@ class RemoteAgentConnections:
             )
         else:
             print(f"  └─ Response : {result.root}")
-
-        print(f"[Step {step():>3}] << EXIT  RemoteAgentConnections.send_message → response received")
-        return result
