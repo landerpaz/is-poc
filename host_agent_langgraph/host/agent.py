@@ -22,6 +22,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import create_react_agent
 
 from ._step import step
+from .llm_logger import LLMLogger
 from .remote_agent_connection import RemoteAgentConnections
 
 load_dotenv()
@@ -175,7 +176,7 @@ class HostAgent:
         
         """
 
-        model = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
+        model = ChatGoogleGenerativeAI(model="gemini-2.5-flash", callbacks=[LLMLogger()])
         self.graph = create_react_agent(
             model,
             tools=[send_message],
