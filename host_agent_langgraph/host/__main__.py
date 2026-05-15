@@ -5,21 +5,25 @@ import sys
 import uuid
 from contextlib import asynccontextmanager
 
+import redis.asyncio as aioredis
 import uvicorn
 from dotenv import load_dotenv
 from starlette.applications import Starlette
+from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, StreamingResponse
 from starlette.routing import Route
 
 from host.agent import HostAgent
+from host.auth import login_handler
 
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-_host_agent: HostAgent  # set during on_startup
+_host_agent: HostAgent
+_redis: aioredis.Redis
 
 _HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -98,7 +102,7 @@ _HTML = """<!DOCTYPE html>
         const resp = await fetch('/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: text, session_id: sessionId })
+          body: JSON.stringify({ message: text, session_id: sessionId, chat_id: sessionId })
         });
 
         const reader = resp.body.getReader();
@@ -140,12 +144,35 @@ async def homepage(request: Request):
 
 
 async def chat_endpoint(request: Request):
+    user_id = request.headers.get("X-User-Id", "anonymous")
     body = await request.json()
     query = body.get("message", "")
-    session_id = body.get("session_id", str(uuid.uuid4()))
+
+    # conversation_id format: <user_id>-<uuid>
+    # Client sends the same id for every turn of one chat session;
+    # a fresh id is created only when the client clicks "Go to Chat".
+    conversation_id: str = (
+        body.get("conversation_id")
+        # or body.get("chat_id")   # backward-compat with legacy HTML client
+        # or body.get("session_id")
+        or f"conversation:{user_id}:{uuid.uuid4()}"
+    )
+
+    # Capture references so the inner generator doesn't rely on mutable outer state
+    redis_client = _redis
+    conv_id = conversation_id
+
+    await redis_client.rpush(conv_id, json.dumps({"role": "user", "content": query}))
+    await redis_client.expire(conv_id, 86400)
 
     async def generate():
-        async for chunk in _host_agent.stream(query, session_id):
+        async for chunk in _host_agent.stream(query, conv_id):
+            if chunk.get("is_task_complete") and chunk.get("content"):
+                await redis_client.rpush(
+                    conv_id,
+                    json.dumps({"role": "agent", "content": chunk["content"]}),
+                )
+                await redis_client.expire(conv_id, 86400)
             yield f"data: {json.dumps(chunk)}\n\n"
         yield "data: [DONE]\n\n"
 
@@ -154,25 +181,38 @@ async def chat_endpoint(request: Request):
 
 @asynccontextmanager
 async def lifespan(app: Starlette):
-    global _host_agent
+    global _host_agent, _redis
     if not os.getenv("GOOGLE_API_KEY"):
         logger.error("GOOGLE_API_KEY environment variable not set.")
         sys.exit(1)
-    domain_agent_urls = [
-        "http://localhost:10005",  # Application Agent
-    ]
+
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+    _redis = aioredis.from_url(redis_url, decode_responses=True)
+    logger.info("Redis connected at %s", redis_url)
+
+    domain_agent_urls = ["http://localhost:10005"]
     logger.info("Initializing Host Agent...")
     _host_agent = await HostAgent.create(remote_agent_addresses=domain_agent_urls)
     logger.info("Host Agent ready at http://localhost:10001")
     yield
+
+    await _redis.aclose()
 
 
 app = Starlette(
     routes=[
         Route("/", homepage),
         Route("/chat", chat_endpoint, methods=["POST"]),
+        Route("/auth/login", login_handler, methods=["POST"]),
     ],
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 if __name__ == "__main__":
