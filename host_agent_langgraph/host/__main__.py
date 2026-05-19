@@ -179,6 +179,33 @@ async def chat_endpoint(request: Request):
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
+async def confirm_endpoint(request: Request):
+    user_id = request.headers.get("X-User-Id", "anonymous")
+    body = await request.json()
+    conversation_id: str = body.get("conversation_id", "")
+    approved: bool = bool(body.get("approved", False))
+
+    redis_client = _redis
+
+    async def generate():
+        async for chunk in _host_agent.stream_resume(conversation_id, approved):
+            if chunk.get("is_task_complete") and chunk.get("content"):
+                action = "approved" if approved else "cancelled"
+                await redis_client.rpush(
+                    conversation_id,
+                    json.dumps({"role": "system", "content": f"[User {action} the operation]"}),
+                )
+                await redis_client.rpush(
+                    conversation_id,
+                    json.dumps({"role": "agent", "content": chunk["content"]}),
+                )
+                await redis_client.expire(conversation_id, 86400)
+            yield f"data: {json.dumps(chunk)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
 @asynccontextmanager
 async def lifespan(app: Starlette):
     global _host_agent, _redis
@@ -203,6 +230,7 @@ app = Starlette(
     routes=[
         Route("/", homepage),
         Route("/chat", chat_endpoint, methods=["POST"]),
+        Route("/chat/confirm", confirm_endpoint, methods=["POST"]),
         Route("/auth/login", login_handler, methods=["POST"]),
     ],
     lifespan=lifespan,

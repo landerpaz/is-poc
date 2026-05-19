@@ -8,5 +8,6 @@ export default defineConfig({
       '/chat': 'http://localhost:10001',
       '/auth': 'http://localhost:10001',
     },
+    // Note: '/chat/confirm' is covered by the '/chat' prefix above
   },
 })

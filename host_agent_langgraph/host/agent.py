@@ -1,4 +1,5 @@
 import json
+import re
 import uuid
 from datetime import datetime
 from typing import Any, AsyncIterable, List
@@ -24,10 +25,21 @@ from langgraph.prebuilt import create_react_agent
 from ._step import step
 from .llm_logger import LLMLogger
 from .remote_agent_connection import RemoteAgentConnections
+from .validation import PromptInjectionError, sanitize
 
 load_dotenv()
 
 _memory = MemorySaver()
+
+# Operations that mutate state and require human confirmation before execution
+_MUTATING_RE = re.compile(
+    r"\b(create|add|insert|register|update|modify|change|edit|set|delete|remove|drop|unregister)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_mutating(task: str) -> bool:
+    return bool(_MUTATING_RE.search(task))
 
 
 class HostAgent:
@@ -181,6 +193,7 @@ class HostAgent:
             model,
             tools=[send_message],
             checkpointer=_memory,
+            interrupt_before=["tools"],
             prompt=system_prompt,
         )
         print(f"[Step {step():>3}] << EXIT  _build_graph → graph ready")
@@ -194,41 +207,104 @@ class HostAgent:
         print(f"[Step {step():>3}] << EXIT  HostAgent.create → instance ready")
         return instance
 
-    async def stream(self, query: str, session_id: str) -> AsyncIterable[dict[str, Any]]:
-        print(f"[Step {step():>3}] >> ENTER stream(session_id={session_id})")
-        inputs = {"messages": [("user", query)]}
-        config: RunnableConfig = {"configurable": {"thread_id": session_id}}
+    async def _stream_graph(
+        self, inputs: dict | None, config: RunnableConfig
+    ) -> AsyncIterable[dict[str, Any]]:
+        """
+        Run one pass of the LangGraph and yield SSE-compatible chunks.
 
+        With interrupt_before=["tools"] the graph pauses before any tool call.
+        After the astream loop finishes we inspect the state:
+          - mutating tool call  → yield requires_confirmation event and stop
+          - read-only tool call → auto-resume transparently
+          - no interrupt        → graph completed normally
+        """
         async for chunk in self.graph.astream(inputs, config, stream_mode="values"):
-            last_message = chunk["messages"][-1]
-            if isinstance(last_message, AIMessage) and last_message.tool_calls:
-                print(f"[Step {step():>3}] AIMessage with tool_calls - type: {type(last_message)}, tool_calls: {last_message.tool_calls}")   
-                yield_message = {
-                    "is_task_complete": False,
-                    "content": "The host agent is thinking...",
-                }
-                print(f"[Step {step():>3}] yield: {yield_message}")
-                yield yield_message
-            elif isinstance(last_message, ToolMessage):
-                print(f"[Step {step():>3}] AIMessage with tool_calls - type: {type(last_message)}")   
-                yield_message = {
-                    "is_task_complete": False,
-                    "content": "The host agent is thinking...",
-                }
-                print(f"[Step {step():>3}] yield: {yield_message}")
-                yield yield_message
-            elif isinstance(last_message, AIMessage) and not last_message.tool_calls:
-                print(f"[Step {step():>3}] AIMessage with tool_calls - type: {type(last_message)}, tool_calls: {last_message.tool_calls}")   
-                content = last_message.content
+            last_msg = chunk["messages"][-1]
+            if isinstance(last_msg, AIMessage) and last_msg.tool_calls:
+                print(f"[Step {step():>3}] tool calls pending: {[tc['name'] for tc in last_msg.tool_calls]}")
+                yield {"is_task_complete": False, "content": "The host agent is thinking..."}
+            elif isinstance(last_msg, ToolMessage):
+                print(f"[Step {step():>3}] tool response received")
+                yield {"is_task_complete": False, "content": "The host agent is thinking..."}
+            elif isinstance(last_msg, AIMessage) and not last_msg.tool_calls:
+                content = last_msg.content
                 if isinstance(content, list):
                     content = "\n".join(
-                    part.get("text", "")
-                    for part in content
-                    if isinstance(part, dict)
+                        part.get("text", "") for part in content if isinstance(part, dict)
                     )
-                yield_message = {
-                    "is_task_complete": True,
-                    "content": content,
-                }
-                print(f"[Step {step():>3}] << EXIT  stream → final response yielded: {yield_message}")
-                yield yield_message
+                print(f"[Step {step():>3}] << EXIT _stream_graph → final response")
+                yield {"is_task_complete": True, "content": content}
+                return  # done — no need to check state
+
+        # Loop ended without a final response → graph interrupted before tools
+        state = await self.graph.aget_state(config)
+        if not state.next:
+            return
+
+        last_msg = state.values["messages"][-1]
+        if not (isinstance(last_msg, AIMessage) and last_msg.tool_calls):
+            return
+
+        mutating_calls = [
+            tc for tc in last_msg.tool_calls
+            if tc.get("name") == "send_message" and _is_mutating(tc["args"].get("task", ""))
+        ]
+
+        if mutating_calls:
+            task_desc = mutating_calls[0]["args"].get("task", "")
+            print(f"[Step {step():>3}] << PAUSED awaiting confirmation: {task_desc}")
+            yield {
+                "is_task_complete": False,
+                "requires_confirmation": True,
+                "pending_task": task_desc,
+                "content": (
+                    "I need your confirmation before proceeding with this operation:\n\n"
+                    f"{task_desc}"
+                ),
+            }
+        else:
+            # Read-only tool call — approve automatically and continue
+            print(f"[Step {step():>3}] auto-resuming read-only tool call")
+            async for item in self._stream_graph(None, config):
+                yield item
+
+    async def stream(self, query: str, session_id: str) -> AsyncIterable[dict[str, Any]]:
+        print(f"[Step {step():>3}] >> ENTER stream(session_id={session_id})")
+
+        try:
+            safe_query = sanitize(query)
+        except PromptInjectionError as exc:
+            print(f"[Step {step():>3}] << BLOCKED prompt injection: {exc}")
+            yield {"is_task_complete": True, "content": "Your message was blocked: possible prompt injection detected."}
+            return
+
+        config: RunnableConfig = {"configurable": {"thread_id": session_id}}
+        inputs = {"messages": [("user", safe_query)]}
+
+        async for item in self._stream_graph(inputs, config):
+            yield item
+
+    async def stream_resume(
+        self, session_id: str, approved: bool
+    ) -> AsyncIterable[dict[str, Any]]:
+        """Resume a graph that was paused waiting for human confirmation."""
+        print(f"[Step {step():>3}] >> ENTER stream_resume(session_id={session_id}, approved={approved})")
+        config: RunnableConfig = {"configurable": {"thread_id": session_id}}
+
+        if not approved:
+            # Inject cancellation ToolMessages so the LLM sees the operation was declined
+            state = await self.graph.aget_state(config)
+            last_msg = state.values["messages"][-1]
+            if isinstance(last_msg, AIMessage) and last_msg.tool_calls:
+                rejections = [
+                    ToolMessage(
+                        content="Operation cancelled by user.",
+                        tool_call_id=tc["id"],
+                    )
+                    for tc in last_msg.tool_calls
+                ]
+                await self.graph.aupdate_state(config, {"messages": rejections}, as_node="tools")
+
+        async for item in self._stream_graph(None, config):
+            yield item

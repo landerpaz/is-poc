@@ -1,10 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
-import { sendMessage } from './api'
+import { sendMessage, confirmAction } from './api'
 
-// conversation_id format: <userId>-<uuid>
+// conversation_id format: conversation:<userId>:<uuid>
 // Created once per ChatPage mount (i.e. each time user clicks "Go to Chat").
-// The same id is sent with every message in this session so the server
-// and Redis can group all turns under one key.
 function createConversationId(userId) {
   return `conversation:${userId}:${crypto.randomUUID()}`
 }
@@ -22,6 +20,33 @@ export default function ChatPage({ userId, onLogout }) {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
+  // Apply result from sendMessage / confirmAction to the message list.
+  // Removes the thinking placeholder identified by thinkingKey, then
+  // appends either an agent reply or an inline confirmation widget.
+  function applyResult(result, thinkingKey) {
+    if (!result) {
+      setMessages(prev => prev.filter(m => m.key !== thinkingKey))
+      return
+    }
+    if (result.type === 'complete') {
+      setMessages(prev => [
+        ...prev.filter(m => m.key !== thinkingKey),
+        { role: 'agent', content: result.content },
+      ])
+    } else if (result.type === 'confirmation') {
+      const confirmKey = `confirmation-${Date.now()}`
+      setMessages(prev => [
+        ...prev.filter(m => m.key !== thinkingKey),
+        {
+          role: 'confirmation',
+          content: result.content,
+          pendingTask: result.pendingTask,
+          key: confirmKey,
+        },
+      ])
+    }
+  }
+
   async function handleSend() {
     const text = input.trim()
     if (!text || sending) return
@@ -37,11 +62,36 @@ export default function ChatPage({ userId, onLogout }) {
     ])
 
     try {
-      const reply = await sendMessage(userId, conversationId, text)
+      const result = await sendMessage(userId, conversationId, text)
+      applyResult(result, thinkingKey)
+    } catch (err) {
       setMessages(prev => [
         ...prev.filter(m => m.key !== thinkingKey),
-        { role: 'agent', content: reply ?? '(no response)' },
+        { role: 'error', content: `Error: ${err.message}` },
       ])
+    } finally {
+      setSending(false)
+    }
+  }
+
+  async function handleConfirm(confirmKey, approved) {
+    // Remove the confirmation widget and show a thinking indicator
+    setMessages(prev => prev.filter(m => m.key !== confirmKey))
+    setSending(true)
+
+    const thinkingKey = `thinking-${Date.now()}`
+    setMessages(prev => [
+      ...prev,
+      {
+        role: 'thinking',
+        content: approved ? 'Executing operation…' : 'Cancelling operation…',
+        key: thinkingKey,
+      },
+    ])
+
+    try {
+      const result = await confirmAction(userId, conversationId, approved)
+      applyResult(result, thinkingKey)
     } catch (err) {
       setMessages(prev => [
         ...prev.filter(m => m.key !== thinkingKey),
@@ -76,7 +126,28 @@ export default function ChatPage({ userId, onLogout }) {
           <div key={msg.key ?? i} className={`msg msg-${msg.role}`}>
             {msg.role === 'user' && <div className="msg-label">You</div>}
             {msg.role === 'agent' && <div className="msg-label">Host Agent</div>}
+            {msg.role === 'confirmation' && <div className="msg-label">Confirmation required</div>}
+
             <div className="msg-content">{msg.content}</div>
+
+            {msg.role === 'confirmation' && (
+              <div className="confirmation-actions">
+                <button
+                  className="confirm-btn approve"
+                  onClick={() => handleConfirm(msg.key, true)}
+                  disabled={sending}
+                >
+                  Approve
+                </button>
+                <button
+                  className="confirm-btn cancel"
+                  onClick={() => handleConfirm(msg.key, false)}
+                  disabled={sending}
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
           </div>
         ))}
         <div ref={bottomRef} />
