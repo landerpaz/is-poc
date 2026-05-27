@@ -5,13 +5,14 @@ from datetime import datetime
 from typing import Any, AsyncIterable, List
 
 import httpx
-from a2a.client import A2ACardResolver
+from a2a.client import A2ACardResolver, AgentCardResolutionError
 from a2a.types import (
     AgentCard,
-    MessageSendParams,
+    Message,
+    Part,
+    Role,
     SendMessageRequest,
-    SendMessageResponse,
-    SendMessageSuccessResponse,
+    StreamResponse,
     Task,
 )
 from dotenv import load_dotenv
@@ -68,7 +69,7 @@ class HostAgent:
                     )
                     self.remote_agent_connections[card.name] = remote_connection
                     self.cards[card.name] = card
-                except httpx.ConnectError as e:
+                except AgentCardResolutionError as e:
                     print(f"ERROR: Failed to get agent card from {address}: {e}")
                 except Exception as e:
                     print(f"ERROR: Failed to initialize connection for {address}: {e}")
@@ -97,49 +98,57 @@ class HostAgent:
             client = remote_connections[agent_name]
 
             message_id = str(uuid.uuid4())
-            # task_id = str(uuid.uuid4())
             context_id = str(uuid.uuid4())
 
-            payload = {
-                "message": {
-                    "role": "user",
-                    "parts": [{"type": "text", "text": task}],
-                    "messageId": message_id,
-                    # "taskId": task_id,
-                    "contextId": context_id,
-                },
-            }
-
-            message_request = SendMessageRequest(
-                id=message_id, params=MessageSendParams.model_validate(payload)
+            message = Message(
+                role=Role.ROLE_USER,
+                parts=[Part(text=task)],
+                message_id=message_id,
+                context_id=context_id,
             )
-            send_response: SendMessageResponse = await client.send_message(message_request)
-            
-            print("Raw send_response from domain agent:")
-            print(json.dumps(send_response.model_dump(mode="json"), indent=2))
+            message_request = SendMessageRequest(message=message)
 
-            if not isinstance(
-                send_response.root, SendMessageSuccessResponse
-            ) or not isinstance(send_response.root.result, Task):
-                print("Received a non-success or non-task response. Cannot proceed.")
-                print(f"[Step {step():>3}] << EXIT  send_message → non-task response, aborting")
+            stream_response: StreamResponse | None = await client.send_message(message_request)
+
+            if stream_response is None:
+                print("Received no response from domain agent.")
+                print(f"[Step {step():>3}] << EXIT  send_message → no response")
                 return "No response received from the agent."
 
-            task = send_response.root.result
-
+            payload_type = stream_response.WhichOneof("payload")
             text_parts = []
 
-            # Primary: artifact parts (completed state)
-            for artifact in (task.artifacts or []):
-                for p in (artifact.parts or []):
-                    if hasattr(p.root, "text"):
-                        text_parts.append(p.root.text)
+            if payload_type == "task":
+                # Full task object — extract from artifacts, fallback to status message
+                result_task: Task = stream_response.task
+                for artifact in result_task.artifacts:
+                    for p in artifact.parts:
+                        if p.WhichOneof("content") == "text":
+                            text_parts.append(p.text)
+                if not text_parts and result_task.status.HasField("message"):
+                    for p in result_task.status.message.parts:
+                        if p.WhichOneof("content") == "text":
+                            text_parts.append(p.text)
 
-            # Fallback: status message parts (input_required / error state)
-            if not text_parts and task.status.message:
-                for p in (task.status.message.parts or []):
-                    if hasattr(p.root, "text"):
-                        text_parts.append(p.root.text)
+            elif payload_type == "artifact_update":
+                # Streaming artifact event — extract directly from the artifact parts
+                artifact = stream_response.artifact_update.artifact
+                for p in artifact.parts:
+                    if p.WhichOneof("content") == "text":
+                        text_parts.append(p.text)
+
+            elif payload_type == "status_update":
+                # Terminal status — extract from the status message if present
+                status = stream_response.status_update.status
+                if status.HasField("message"):
+                    for p in status.message.parts:
+                        if p.WhichOneof("content") == "text":
+                            text_parts.append(p.text)
+
+            else:
+                print(f"Unhandled response payload type: {payload_type}")
+                print(f"[Step {step():>3}] << EXIT  send_message → unhandled response type")
+                return "No response received from the agent."
 
             result = "\n".join(text_parts) if text_parts else "No response received."
             print(f"[Step {step():>3}] << EXIT  send_message → {len(text_parts)} text part(s) from {agent_name}")
@@ -185,7 +194,7 @@ class HostAgent:
 
         ## SECTION 2 — Other agents will be added later!
 
-        
+
         """
 
         model = ChatGoogleGenerativeAI(model="gemini-2.5-flash", callbacks=[LLMLogger()])

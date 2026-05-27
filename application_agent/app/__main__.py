@@ -3,17 +3,20 @@ import os
 import sys
 
 import uvicorn
-from a2a.server.apps import A2AStarletteApplication
-from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.request_handlers import LegacyRequestHandler
+from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import (
     AgentCapabilities,
     AgentCard,
+    AgentInterface,
     AgentSkill,
 )
+from a2a.utils.constants import PROTOCOL_VERSION_CURRENT, TransportProtocol
 from app.agent import ApplicationAgent
 from app.agent_executor import ApplicationAgentExecutor
 from dotenv import load_dotenv
+from starlette.applications import Starlette
 
 load_dotenv()
 
@@ -77,25 +80,33 @@ def main():
                 "Manages a registry of software applications. "
                 "Can list applications by owner, retrieve descriptions, and update descriptions."
             ),
-            url=f"http://{host}:{port}/",
+            supported_interfaces=[
+                AgentInterface(
+                    url=f"http://{host}:{port}/",
+                    protocol_binding=TransportProtocol.JSONRPC,
+                    protocol_version=PROTOCOL_VERSION_CURRENT,
+                )
+            ],
             version="1.0.0",
-            defaultInputModes=ApplicationAgent.SUPPORTED_CONTENT_TYPES,
-            defaultOutputModes=ApplicationAgent.SUPPORTED_CONTENT_TYPES,
+            default_input_modes=ApplicationAgent.SUPPORTED_CONTENT_TYPES,
+            default_output_modes=ApplicationAgent.SUPPORTED_CONTENT_TYPES,
             capabilities=capabilities,
             skills=skills,
         )
 
-        request_handler = DefaultRequestHandler(
+        request_handler = LegacyRequestHandler(
             agent_executor=ApplicationAgentExecutor(),
             task_store=InMemoryTaskStore(),
-        )
-        server = A2AStarletteApplication(
             agent_card=agent_card,
-            http_handler=request_handler,
         )
 
+        routes = create_agent_card_routes(agent_card) + create_jsonrpc_routes(
+            request_handler, rpc_url="/"
+        )
+        app = Starlette(routes=routes)
+
         logger.info(f"Starting Application Agent on http://{host}:{port}")
-        uvicorn.run(server.build(), host=host, port=port)
+        uvicorn.run(app, host=host, port=port)
 
     except MissingAPIKeyError as e:
         logger.error(f"Error: {e}")

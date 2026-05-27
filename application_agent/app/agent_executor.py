@@ -7,10 +7,8 @@ from a2a.types import (
     InternalError,
     Part,
     TaskState,
-    TextPart,
     UnsupportedOperationError,
 )
-from a2a.utils.errors import ServerError
 from app.agent import ApplicationAgent
 
 logging.basicConfig(level=logging.INFO)
@@ -51,12 +49,12 @@ class ApplicationAgentExecutor(AgentExecutor):
             async for item in self.agent.stream(query, context.context_id):
                 is_task_complete = item["is_task_complete"]
                 require_user_input = item["require_user_input"]
-                parts = [Part(root=TextPart(text=item["content"]))]
+                parts = [Part(text=item["content"])]
 
                 if not is_task_complete and not require_user_input:
                     logger.info("  ↳ [working] %s", item["content"])
                     await updater.update_status(
-                        TaskState.working,
+                        TaskState.TASK_STATE_WORKING,
                         message=updater.new_agent_message(parts),
                     )
                 elif require_user_input:
@@ -67,10 +65,8 @@ class ApplicationAgentExecutor(AgentExecutor):
                         context.task_id,
                         item["content"],
                     )
-                    await updater.update_status(
-                        TaskState.input_required,
+                    await updater.requires_input(
                         message=updater.new_agent_message(parts),
-                        final=True,
                     )
                     break
                 else:
@@ -90,7 +86,7 @@ class ApplicationAgentExecutor(AgentExecutor):
 
         except Exception as e:
             logger.error("Error while streaming agent response: %s", e)
-            raise ServerError(error=InternalError()) from e
+            raise InternalError() from e
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
-        raise ServerError(error=UnsupportedOperationError())
+        raise UnsupportedOperationError()

@@ -4,7 +4,8 @@ version = "0.1.0"
 description = "Application management agent with A2A Protocol"
 requires-python = ">=3.12"
 dependencies = [
-    "a2a-sdk>=0.2.5,<0.3.0",
+    "a2a-sdk>=1.0.2,<2.0.0",
+    "starlette>=0.41.0",
     "httpx>=0.28.1",
     "langchain-google-genai>=2.0.10",
     "langgraph>=0.3.18",

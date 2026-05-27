@@ -5,7 +5,7 @@ description = "Host orchestrator agent using LangGraph with A2A Protocol"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "a2a-sdk>=0.2.5,<0.3.0",
+    "a2a-sdk>=1.0.2,<2.0.0",
     "httpx>=0.28.1",
     "langchain-google-genai>=2.0.10",
     "langgraph>=0.3.18",

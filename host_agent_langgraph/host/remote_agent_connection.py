@@ -1,12 +1,10 @@
-from typing import Callable
-
 import httpx
-from a2a.client import A2AClient
+from a2a.client import ClientFactory
+from a2a.client.client import ClientConfig
 from a2a.types import (
     AgentCard,
     SendMessageRequest,
-    SendMessageResponse,
-    SendMessageSuccessResponse,
+    StreamResponse,
     Task,
     TaskArtifactUpdateEvent,
     TaskStatusUpdateEvent,
@@ -17,9 +15,6 @@ from ._step import step
 
 load_dotenv()
 
-TaskCallbackArg = Task | TaskStatusUpdateEvent | TaskArtifactUpdateEvent
-TaskUpdateCallback = Callable[[TaskCallbackArg, AgentCard], Task]
-
 
 class RemoteAgentConnections:
     """A class to hold the connections to the remote agents."""
@@ -27,7 +22,8 @@ class RemoteAgentConnections:
     def __init__(self, agent_card: AgentCard, agent_url: str):
         print(f"[Step {step():>3}] >> ENTER RemoteAgentConnections.__init__(agent={agent_card.name}, url={agent_url})")
         self._httpx_client = httpx.AsyncClient(timeout=30)
-        self.agent_client = A2AClient(self._httpx_client, agent_card, url=agent_url)
+        factory = ClientFactory(ClientConfig(httpx_client=self._httpx_client))
+        self.agent_client = factory.create(agent_card)
         self.card = agent_card
         self.conversation_name = None
         self.conversation = None
@@ -42,13 +38,13 @@ class RemoteAgentConnections:
 
     async def send_message(
         self, message_request: SendMessageRequest
-    ) -> SendMessageResponse:
-        print(f"[Step {step():>3}] >> ENTER RemoteAgentConnections.send_message(id={message_request.id})")
-        msg = message_request.params.message
+    ) -> StreamResponse | None:
+        print(f"[Step {step():>3}] >> ENTER RemoteAgentConnections.send_message")
+        msg = message_request.message
         text_parts = [
-            p.root.text
-            for p in (msg.parts or [])
-            if hasattr(p.root, "text")
+            p.text
+            for p in msg.parts
+            if p.WhichOneof("content") == "text"
         ]
         print(f"[Step {step():>3}] >> Sending message to {self.card.name}")
         print(
@@ -58,24 +54,46 @@ class RemoteAgentConnections:
             f"  ├─ Ctx ID  : {msg.context_id}\n"
             f"  └─ Message : {' | '.join(text_parts) or '(no text parts)'}"
         )
-        result = await self.agent_client.send_message(message_request)
-        print(f"[Step {step():>3}] << EXIT  RemoteAgentConnections.send_message → response received")
-        self._log_response(result)
-        return result
 
-    def _log_response(self, result: SendMessageResponse) -> None:
-        if isinstance(result.root, SendMessageSuccessResponse) and isinstance(result.root.result, Task):
-            task = result.root.result
-            status_text = " | ".join(
-                p.root.text
-                for p in (task.status.message.parts or [])
-                if hasattr(p.root, "text")
-            ) if task.status.message else ""
+        last_task: StreamResponse | None = None
+        last_artifact: StreamResponse | None = None
+        last_status: StreamResponse | None = None
+
+        async for stream_response in self.agent_client.send_message(message_request):
+            payload_type = stream_response.WhichOneof("payload")
+            if payload_type == "task":
+                last_task = stream_response
+            elif payload_type == "artifact_update":
+                last_artifact = stream_response
+            elif payload_type in ("status_update", "message"):
+                last_status = stream_response
+
+        # Prefer artifact content (has the result) > full task > status-only
+        final_response = last_artifact or last_task or last_status
+        print(f"[Step {step():>3}] << EXIT  RemoteAgentConnections.send_message → response received")
+        self._log_response(final_response)
+        return final_response
+
+    def _log_response(self, result: StreamResponse | None) -> None:
+        if result is None:
+            print("  └─ Response : (none)")
+            return
+
+        payload_type = result.WhichOneof("payload")
+        if payload_type == "task":
+            task = result.task
+            status_text = ""
+            if task.status.HasField("message"):
+                status_text = " | ".join(
+                    p.text
+                    for p in task.status.message.parts
+                    if p.WhichOneof("content") == "text"
+                )
             artifact_texts = [
-                p.root.text
-                for artifact in (task.artifacts or [])
-                for p in (artifact.parts or [])
-                if hasattr(p.root, "text")
+                p.text
+                for artifact in task.artifacts
+                for p in artifact.parts
+                if p.WhichOneof("content") == "text"
             ]
             print(
                 f"  ┌─ From     : {self.card.name}\n"
@@ -85,4 +103,4 @@ class RemoteAgentConnections:
                 f"  └─ Artifacts: {' | '.join(artifact_texts) or '(none)'}"
             )
         else:
-            print(f"  └─ Response : {result.root}")
+            print(f"  └─ Response : {result}")
