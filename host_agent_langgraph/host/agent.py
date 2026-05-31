@@ -43,6 +43,28 @@ def _is_mutating(task: str) -> bool:
     return bool(_MUTATING_RE.search(task))
 
 
+def _tool_call_status(tool_calls: list) -> str:
+    """Build a human-readable status message for pending tool calls."""
+    if not tool_calls:
+        return "Thinking..."
+    tc = tool_calls[0]
+    if tc["name"] == "send_message":
+        agent = tc["args"].get("agent_name", "remote agent")
+        task_text = tc["args"].get("task", "")
+        summary = task_text[:72] + "..." if len(task_text) > 72 else task_text
+        return f"Contacting {agent}: {summary}"
+    return f"Calling {tc['name']}..."
+
+
+def _tool_response_status(msg: ToolMessage) -> str:
+    """Build a human-readable status message when a tool result arrives."""
+    raw = msg.content if isinstance(msg.content, str) else str(msg.content)
+    if not raw or raw == "No response received.":
+        return "Received response, preparing answer..."
+    summary = raw[:120] + "..." if len(raw) > 120 else raw
+    return f"Received: {summary}"
+
+
 class HostAgent:
     """The Host agent."""
 
@@ -232,10 +254,10 @@ class HostAgent:
             last_msg = chunk["messages"][-1]
             if isinstance(last_msg, AIMessage) and last_msg.tool_calls:
                 print(f"[Step {step():>3}] tool calls pending: {[tc['name'] for tc in last_msg.tool_calls]}")
-                yield {"is_task_complete": False, "content": "The host agent is thinking..."}
+                yield {"is_task_complete": False, "content": _tool_call_status(last_msg.tool_calls)}
             elif isinstance(last_msg, ToolMessage):
                 print(f"[Step {step():>3}] tool response received")
-                yield {"is_task_complete": False, "content": "The host agent is thinking..."}
+                yield {"is_task_complete": False, "content": _tool_response_status(last_msg)}
             elif isinstance(last_msg, AIMessage) and not last_msg.tool_calls:
                 content = last_msg.content
                 if isinstance(content, list):

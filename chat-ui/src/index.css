@@ -219,10 +219,66 @@ button:disabled {
 
 .msg-thinking {
   background: #fff8e1;
-  color: #f57f17;
-  font-style: italic;
-  font-size: 0.88em;
+  border: 1px solid #ffe082;
+  color: #4a3800;
   align-self: flex-start;
+}
+
+.msg-thinking .msg-label {
+  color: #e65100;
+  opacity: 1;
+}
+
+.thinking-log {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.thinking-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 0.83em;
+  line-height: 1.45;
+}
+
+.thinking-step-icon {
+  flex-shrink: 0;
+  width: 14px;
+  margin-top: 1px;
+}
+
+.thinking-step-text {
+  word-break: break-word;
+  flex: 1;
+}
+
+.thinking-step-timer {
+  font-family: monospace;
+  font-size: 0.78em;
+  opacity: 0.55;
+  flex-shrink: 0;
+  margin-left: 8px;
+  white-space: nowrap;
+}
+
+.thinking-step--done {
+  opacity: 0.5;
+}
+
+.thinking-step--active {
+  color: #e65100;
+  font-style: italic;
+}
+
+.thinking-step--active .thinking-step-icon {
+  display: inline-block;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 .msg-error {

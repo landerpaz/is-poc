@@ -9,16 +9,20 @@ export async function login(userId, password) {
   return data
 }
 
-// Reads an SSE stream and returns the first meaningful result:
+// Reads an SSE stream and returns the terminal result:
 //   { type: 'complete',      content: string }
 //   { type: 'confirmation',  content: string, pendingTask: string }
 //   null  — stream ended without a result
-async function readSSEStream(response) {
+//
+// onProgress(content) is called for every unique intermediate chunk so the
+// caller can update the UI in real time.
+async function readSSEStream(response, onProgress) {
   if (!response.ok) throw new Error('Request failed')
 
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buf = ''
+  let lastProgressContent = ''
 
   while (true) {
     const { done, value } = await reader.read()
@@ -42,13 +46,18 @@ async function readSSEStream(response) {
             pendingTask: chunk.pending_task,
           }
         }
+        // Intermediate progress — fire callback, deduplicate consecutive identical messages
+        if (onProgress && chunk.content && chunk.content !== lastProgressContent) {
+          lastProgressContent = chunk.content
+          onProgress(chunk.content)
+        }
       } catch (_) {}
     }
   }
   return null
 }
 
-export async function sendMessage(userId, conversationId, message) {
+export async function sendMessage(userId, conversationId, message, onProgress) {
   const res = await fetch('/chat', {
     method: 'POST',
     headers: {
@@ -57,10 +66,10 @@ export async function sendMessage(userId, conversationId, message) {
     },
     body: JSON.stringify({ message, conversation_id: conversationId }),
   })
-  return readSSEStream(res)
+  return readSSEStream(res, onProgress)
 }
 
-export async function confirmAction(userId, conversationId, approved) {
+export async function confirmAction(userId, conversationId, approved, onProgress) {
   const res = await fetch('/chat/confirm', {
     method: 'POST',
     headers: {
@@ -69,5 +78,5 @@ export async function confirmAction(userId, conversationId, approved) {
     },
     body: JSON.stringify({ conversation_id: conversationId, approved }),
   })
-  return readSSEStream(res)
+  return readSSEStream(res, onProgress)
 }
